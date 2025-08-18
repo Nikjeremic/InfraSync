@@ -78,13 +78,8 @@ router.post('/', auth, [
       return res.status(404).json({ message: 'Ticket not found' });
     }
 
-    // Check if user has access to this ticket
-    const canAccess = req.user.role === 'admin' || 
-                     req.user.company?.toString() === ticket.company.toString() ||
-                     ticket.reporter?.toString() === req.user.id ||
-                     ticket.assignee?.toString() === req.user.id;
-
-    if (!canAccess) {
+    // Check if user has access to this ticket using the new canUserView method
+    if (!ticket.canUserView(req.user.id, req.user.role)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 

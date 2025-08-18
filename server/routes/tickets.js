@@ -260,13 +260,19 @@ router.put('/:id', auth, [
       return res.status(404).json({ message: 'Ticket not found' });
     }
 
-    // Check permissions
-    const canEdit = req.user.role === 'admin' || 
-                   req.user.role === 'manager' || 
-                   ticket.assignee?.toString() === req.user.id ||
-                   ticket.reporter?.toString() === req.user.id;
-
-    if (!canEdit) {
+    // Check permissions for different types of updates
+    const isStatusUpdate = req.body.status !== undefined;
+    const isOtherUpdate = req.body.priority !== undefined || 
+                         req.body.category !== undefined || 
+                         req.body.assignee !== undefined;
+    
+    // For status updates (like closing tickets), check if user can close
+    if (isStatusUpdate && !ticket.canUserClose(req.user.id, req.user.role)) {
+      return res.status(403).json({ message: 'Not authorized to change ticket status' });
+    }
+    
+    // For other updates, check if user can edit
+    if (isOtherUpdate && !ticket.canUserEdit(req.user.id, req.user.role)) {
       return res.status(403).json({ message: 'Not authorized to edit this ticket' });
     }
 
@@ -565,6 +571,225 @@ router.post('/:id/internal-notes', auth, requireRole(['agent', 'manager', 'admin
     res.json(ticket.internalNotes[ticket.internalNotes.length - 1]);
   } catch (error) {
     console.error('Add internal note error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   POST /api/tickets/:id/reopen-request
+// @desc    Request ticket reopen (for users only)
+// @access  Private
+router.post('/:id/reopen-request', auth, [
+  body('reason').trim().isLength({ min: 10 }).withMessage('Reason must be at least 10 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // Check if user can request reopen
+    if (!ticket.canUserRequestReopen(req.user.id, req.user.role)) {
+      return res.status(403).json({ message: 'You cannot request reopen for this ticket' });
+    }
+
+    await ticket.requestReopen(req.user.id, req.body.reason);
+    
+    // Populate user info for response
+    await ticket.populate('reopenRequests.requestedBy', 'firstName lastName email');
+    
+    res.json({ 
+      message: 'Reopen request submitted successfully',
+      request: ticket.reopenRequests[ticket.reopenRequests.length - 1]
+    });
+  } catch (error) {
+    console.error('Reopen request error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   PUT /api/tickets/:id/reopen-request/:requestId/approve
+// @desc    Approve reopen request (admin only)
+// @access  Private (Admin/Manager only)
+router.put('/:id/reopen-request/:requestId/approve', auth, requireRole(['admin', 'manager']), [
+  body('reviewNote').optional().trim()
+], async (req, res) => {
+  try {
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    await ticket.approveReopen(req.user.id, req.params.requestId, req.body.reviewNote || '');
+    
+    res.json({ 
+      message: 'Ticket reopened successfully',
+      ticket: {
+        id: ticket._id,
+        status: ticket.status,
+        reopenRequests: ticket.reopenRequests
+      }
+    });
+  } catch (error) {
+    console.error('Approve reopen error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   PUT /api/tickets/:id/reopen-request/:requestId/reject
+// @desc    Reject reopen request (admin only)
+// @access  Private (Admin/Manager only)
+router.put('/:id/reopen-request/:requestId/reject', auth, requireRole(['admin', 'manager']), [
+  body('reviewNote').optional().trim()
+], async (req, res) => {
+  try {
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    await ticket.rejectReopen(req.user.id, req.params.requestId, req.body.reviewNote || '');
+    
+    res.json({ 
+      message: 'Reopen request rejected',
+      ticket: {
+        id: ticket._id,
+        status: ticket.status,
+        reopenRequests: ticket.reopenRequests
+      }
+    });
+  } catch (error) {
+    console.error('Reject reopen error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   GET /api/tickets/:id/reopen-requests
+// @desc    Get reopen requests for a ticket
+// @access  Private
+router.get('/:id/reopen-requests', auth, async (req, res) => {
+  try {
+    const ticket = await Ticket.findById(req.params.id)
+      .populate('reopenRequests.requestedBy', 'firstName lastName email')
+      .populate('reopenRequests.reviewedBy', 'firstName lastName email');
+    
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    res.json({
+      reopenRequests: ticket.reopenRequests,
+      canRequestReopen: ticket.canUserRequestReopen(req.user.id, req.user.role)
+    });
+  } catch (error) {
+    console.error('Get reopen requests error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   GET /api/tickets/:id/comments
+// @desc    Get all comments for a ticket
+// @access  Private
+router.get('/:id/comments', auth, async (req, res) => {
+  try {
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // Check if user can view this ticket
+    if (!ticket.canUserView(req.user.id, req.user.role)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const Comment = require('../models/Comment');
+    const comments = await Comment.find({ ticket: req.params.id })
+      .populate('author', 'firstName lastName email avatar')
+      .sort({ createdAt: 1 });
+
+    // Filter internal comments based on user role
+    const filteredComments = comments.map(comment => {
+      if (comment.isInternal && !['admin', 'manager', 'agent'].includes(req.user.role)) {
+        return {
+          ...comment.toObject(),
+          content: '[Internal Comment - Not Visible]',
+          isInternal: true
+        };
+      }
+      return comment;
+    });
+
+    res.json({ comments: filteredComments });
+  } catch (error) {
+    console.error('Get comments error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   POST /api/tickets/:id/comments
+// @desc    Add a comment to a ticket (reply functionality)
+// @access  Private
+router.post('/:id/comments', auth, [
+  body('content').trim().isLength({ min: 1, max: 2000 }).withMessage('Comment must be between 1 and 2000 characters'),
+  body('isInternal').optional().isBoolean().withMessage('isInternal must be a boolean')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { content, isInternal = false } = req.body;
+
+    // Check if ticket exists
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // Check if user can add comments to this ticket
+    if (!ticket.canUserAddComments(req.user.id, req.user.role)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // Only staff can create internal comments
+    if (isInternal && !['admin', 'manager', 'agent'].includes(req.user.role)) {
+      return res.status(403).json({ message: 'Only staff can create internal comments' });
+    }
+
+    const Comment = require('../models/Comment');
+    const comment = new Comment({
+      ticket: req.params.id,
+      author: req.user.id,
+      content,
+      isInternal
+    });
+
+    await comment.save();
+    await comment.populate('author', 'firstName lastName email avatar');
+
+    // Update ticket status to 'in_progress' if it was 'open' and comment is from staff
+    if (ticket.status === 'open' && ['admin', 'manager', 'agent'].includes(req.user.role)) {
+      ticket.status = 'in_progress';
+      await ticket.save();
+      
+      // Create auto-comment for status change
+      const statusComment = new Comment({
+        ticket: req.params.id,
+        author: req.user.id,
+        content: `**System Update:** Status changed from open to in_progress`,
+        isInternal: false
+      });
+      await statusComment.save();
+    }
+
+    res.status(201).json(comment);
+  } catch (error) {
+    console.error('Create comment error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });

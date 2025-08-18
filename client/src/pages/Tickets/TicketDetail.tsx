@@ -63,13 +63,18 @@ const TicketDetail: React.FC = () => {
   const [newComment, setNewComment] = useState('');
   const [isInternal, setIsInternal] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
-  const [commentFilter, setCommentFilter] = useState<'all' | 'user' | 'system'>('all');
+
   const [editData, setEditData] = useState({
     status: '',
     priority: '',
     category: '',
     assignee: ''
   });
+  
+  // Reopen request state
+  const [showReopenDialog, setShowReopenDialog] = useState(false);
+  const [reopenReason, setReopenReason] = useState('');
+  const [showReopenRequests, setShowReopenRequests] = useState(false);
 
   // Fetch ticket details
   const { data: ticketData, isLoading: ticketLoading } = useQuery(
@@ -81,7 +86,7 @@ const TicketDetail: React.FC = () => {
   // Fetch comments
   const { data: commentsData, isLoading: commentsLoading } = useQuery(
     ['comments', id],
-    () => commentsAPI.getForTicket(id!),
+    () => ticketsAPI.getComments(id!),
     { enabled: !!id }
   );
 
@@ -92,18 +97,69 @@ const TicketDetail: React.FC = () => {
     { enabled: !!id }
   );
 
+  // Fetch reopen requests
+  const { data: reopenRequestsData } = useQuery(
+    ['reopen-requests', id],
+    () => ticketsAPI.getReopenRequests(id!),
+    { enabled: !!id }
+  );
+
   // Mutations
   const createCommentMutation = useMutation(
     (commentData: any) => commentsAPI.create(commentData),
     {
       onSuccess: () => {
         queryClient.invalidateQueries(['comments', id]);
-        setNewComment('');
-        setIsInternal(false);
-        toast.success('Comment added successfully');
       },
       onError: (error: any) => {
-        toast.error(error.response?.data?.message || 'Failed to add comment');
+        toast.error(error.response?.data?.message || 'Failed to create comment');
+      },
+    }
+  );
+
+  // Reopen request mutations
+  const requestReopenMutation = useMutation(
+    (reason: string) => ticketsAPI.requestReopen(id!, reason),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['reopen-requests', id]);
+        queryClient.invalidateQueries(['ticket', id]);
+        toast.success('Reopen request submitted successfully');
+        setShowReopenDialog(false);
+        setReopenReason('');
+      },
+      onError: (error: any) => {
+        toast.error(error.response?.data?.message || 'Failed to submit reopen request');
+      },
+    }
+  );
+
+  const approveReopenMutation = useMutation(
+    ({ requestId, reviewNote }: { requestId: string; reviewNote?: string }) =>
+      ticketsAPI.approveReopen(id!, requestId, reviewNote),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['reopen-requests', id]);
+        queryClient.invalidateQueries(['ticket', id]);
+        toast.success('Ticket reopened successfully');
+      },
+      onError: (error: any) => {
+        toast.error(error.response?.data?.message || 'Failed to reopen ticket');
+      },
+    }
+  );
+
+  const rejectReopenMutation = useMutation(
+    ({ requestId, reviewNote }: { requestId: string; reviewNote?: string }) =>
+      ticketsAPI.rejectReopen(id!, requestId, reviewNote),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['reopen-requests', id]);
+        queryClient.invalidateQueries(['ticket', id]);
+        toast.success('Reopen request rejected');
+      },
+      onError: (error: any) => {
+        toast.error(error.response?.data?.message || 'Failed to reject reopen request');
       },
     }
   );
@@ -126,14 +182,20 @@ const TicketDetail: React.FC = () => {
   const ticket = ticketData?.data;
   const comments = commentsData?.data?.comments || [];
   const users = usersData?.data?.users || [];
+  const reopenRequests = reopenRequestsData?.data?.reopenRequests || [];
+  const canRequestReopen = reopenRequestsData?.data?.canRequestReopen || false;
 
   const handleAddComment = () => {
     if (!newComment.trim()) return;
 
-    createCommentMutation.mutate({
-      ticketId: id,
-      content: newComment,
-      isInternal
+    // Use the new tickets API endpoint for comments
+    ticketsAPI.addComment(id!, newComment, isInternal).then(() => {
+      queryClient.invalidateQueries(['comments', id]);
+      setNewComment('');
+      setIsInternal(false);
+      toast.success('Comment added successfully');
+    }).catch((error: any) => {
+      toast.error(error.response?.data?.message || 'Failed to add comment');
     });
   };
 
@@ -165,6 +227,23 @@ const TicketDetail: React.FC = () => {
     updateTicketMutation.mutate(editData);
   };
 
+  const handleRequestReopen = () => {
+    if (!reopenReason.trim()) {
+      toast.error('Please provide a reason for reopening');
+      return;
+    }
+    
+    requestReopenMutation.mutate(reopenReason);
+  };
+
+  const handleApproveReopen = (requestId: string, reviewNote?: string) => {
+    approveReopenMutation.mutate({ requestId, reviewNote });
+  };
+
+  const handleRejectReopen = (requestId: string, reviewNote?: string) => {
+    rejectReopenMutation.mutate({ requestId, reviewNote });
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'open': return 'default';
@@ -185,24 +264,110 @@ const TicketDetail: React.FC = () => {
     }
   };
 
+  const canCloseTicket = () => {
+    if (!ticket || !user) return false;
+    
+    // Admin and managers can always close tickets
+    if (['admin', 'manager'].includes(user.role)) {
+      return true;
+    }
+    
+    // Agents can close tickets if assigned
+    if (user.role === 'agent') {
+      return ticket.assignee?._id === user.id;
+    }
+    
+    // Users can close their own tickets if they're open or in_progress
+    if (user.role === 'user') {
+      return ticket.reporter._id === user.id && 
+             ['open', 'in_progress'].includes(ticket.status);
+    }
+    
+    return false;
+  };
+
   const canEditTicket = () => {
     if (!ticket || !user) return false;
-    return user.role === 'admin' || 
-           user.role === 'manager' || 
-           ticket.assignee?._id === user.id ||
-           ticket.reporter._id === user.id;
+    
+    // Admin and managers can always edit
+    if (['admin', 'manager'].includes(user.role)) {
+      return true;
+    }
+    
+    // Agents can edit if assigned or if ticket is open/in_progress
+    if (user.role === 'agent') {
+      return ticket.assignee?._id === user.id || 
+             ['open', 'in_progress'].includes(ticket.status);
+    }
+    
+    // Users cannot edit tickets (only close them)
+    if (user.role === 'user') {
+      return false;
+    }
+    
+    return false;
+  };
+
+  const canViewTicket = () => {
+    if (!ticket || !user) return false;
+    
+    // Admin and managers can always view
+    if (['admin', 'manager'].includes(user.role)) {
+      return true;
+    }
+    
+    // Agents can view if assigned or if ticket is open/in_progress
+    if (user.role === 'agent') {
+      return ticket.assignee?._id === user.id || 
+             ['open', 'in_progress'].includes(ticket.status);
+    }
+    
+    // Users can always view their own tickets regardless of status
+    if (user.role === 'user') {
+      return ticket.reporter._id === user.id;
+    }
+    
+    return false;
+  };
+
+  const canAddComments = () => {
+    if (!ticket || !user) return false;
+    
+    // Admin and managers can always add comments
+    if (['admin', 'manager'].includes(user.role)) {
+      return true;
+    }
+    
+    // Agents can add comments if assigned or if ticket is open/in_progress
+    if (user.role === 'agent') {
+      return ticket.assignee?._id === user.id || 
+             ['open', 'in_progress'].includes(ticket.status);
+    }
+    
+    // Users can add comments to their own tickets if they're not resolved
+    if (user.role === 'user') {
+      return ticket.reporter._id === user.id && ticket.status !== 'resolved';
+    }
+    
+    return false;
+  };
+
+  const canRequestReopenTicket = () => {
+    if (!ticket || !user) return false;
+    
+    // Only users can request reopen for their own closed tickets
+    if (user.role === 'user') {
+      return ticket.reporter._id === user.id && ticket.status === 'closed';
+    }
+    
+    return false;
   };
 
   const canCreateInternalComments = () => {
     return ['admin', 'manager', 'agent'].includes(user?.role || '');
   };
 
-  const filteredComments = comments.filter((comment: Comment) => {
-    if (commentFilter === 'all') return true;
-    if (commentFilter === 'user') return !comment.content.startsWith('**');
-    if (commentFilter === 'system') return comment.content.startsWith('**');
-    return true;
-  });
+
 
   if (ticketLoading) {
     return (
@@ -234,20 +399,58 @@ const TicketDetail: React.FC = () => {
         <Typography variant="h4" component="h1" sx={{ fontWeight: 'bold', flexGrow: 1 }}>
           {ticket.ticketNumber}
         </Typography>
-        {canEditTicket() && (
+        {canRequestReopenTicket() && (
           <Button
             variant="outlined"
-            startIcon={<Edit />}
-            onClick={handleEditTicket}
+            color="warning"
+            onClick={() => setShowReopenDialog(true)}
+            sx={{ mr: 1 }}
           >
-            Edit Ticket
+            Request Reopen
+          </Button>
+        )}
+        {reopenRequests.length > 0 && (
+          <Button
+            variant="outlined"
+            color="info"
+            onClick={() => setShowReopenRequests(!showReopenRequests)}
+            sx={{ mr: 1 }}
+          >
+            Reopen Requests ({reopenRequests.filter((r: any) => r.status === 'pending').length})
+          </Button>
+        )}
+
+        {canCloseTicket() && ticket.status !== 'closed' && (
+          <Button
+            variant="outlined"
+            color="error"
+            onClick={() => {
+              if (window.confirm('Are you sure you want to close this ticket?')) {
+                updateTicketMutation.mutate({ status: 'closed' });
+              }
+            }}
+            sx={{ mr: 1 }}
+          >
+            Close Ticket
+          </Button>
+        )}
+        {canEditTicket() && ticket.status === 'closed' && (
+          <Button
+            variant="outlined"
+            color="success"
+            onClick={() => {
+              if (window.confirm('Are you sure you want to reopen this ticket?')) {
+                updateTicketMutation.mutate({ status: 'open' });
+              }
+            }}
+            sx={{ mr: 1 }}
+          >
+            Reopen Ticket
           </Button>
         )}
       </Box>
 
-      <Grid container spacing={3}>
-        {/* Ticket Details */}
-        <Grid item xs={12} md={8}>
+
           <Card sx={{ mb: 3 }}>
             <CardContent>
               <Typography variant="h5" component="h2" sx={{ mb: 2 }}>
@@ -315,73 +518,116 @@ const TicketDetail: React.FC = () => {
             </CardContent>
           </Card>
 
+          {/* Quick Actions */}
+          {['admin', 'manager'].includes(user?.role || '') && (
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  Quick Actions
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<Edit />}
+                    onClick={handleEditTicket}
+                  >
+                    Edit Ticket
+                  </Button>
+                  {canCloseTicket() && ticket.status !== 'closed' ? (
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      onClick={() => {
+                        if (window.confirm('Are you sure you want to close this ticket?')) {
+                          updateTicketMutation.mutate({ status: 'closed' });
+                        }
+                      }}
+                    >
+                      Close Ticket
+                    </Button>
+                  ) : canCloseTicket() && (
+                    <Button
+                      variant="outlined"
+                      color="success"
+                      onClick={() => {
+                        if (window.confirm('Are you sure you want to reopen this ticket?')) {
+                          updateTicketMutation.mutate({ status: 'open' });
+                        }
+                      }}
+                    >
+                      Reopen Ticket
+                    </Button>
+                  )}
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Reopen Request Button */}
+          {canRequestReopenTicket() && (
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  Ticket Actions
+                </Typography>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  color="warning"
+                  onClick={() => setShowReopenDialog(true)}
+                >
+                  Request Reopen
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Comments */}
           <Card>
             <CardContent>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                 <Typography variant="h6">
-                  Comments ({filteredComments.length})
+                  Comments ({comments.length})
                 </Typography>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                  <Button
-                    size="small"
-                    variant={commentFilter === 'all' ? 'contained' : 'outlined'}
-                    onClick={() => setCommentFilter('all')}
-                  >
-                    All
-                  </Button>
-                  <Button
-                    size="small"
-                    variant={commentFilter === 'user' ? 'contained' : 'outlined'}
-                    onClick={() => setCommentFilter('user')}
-                  >
-                    User
-                  </Button>
-                  <Button
-                    size="small"
-                    variant={commentFilter === 'system' ? 'contained' : 'outlined'}
-                    onClick={() => setCommentFilter('system')}
-                  >
-                    System
-                  </Button>
-                </Box>
               </Box>
 
               {/* Add Comment */}
-              <Box sx={{ mb: 3 }}>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={3}
-                  placeholder="Add a comment..."
-                  value={newComment}
-                  onChange={(e) => setNewComment(e.target.value)}
-                  sx={{ mb: 1 }}
-                />
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                    {canCreateInternalComments() && (
-                      <Button
-                        size="small"
-                        startIcon={isInternal ? <VisibilityOff /> : <Visibility />}
-                        onClick={() => setIsInternal(!isInternal)}
-                                                 color={isInternal ? 'warning' : 'inherit'}
-                        variant={isInternal ? 'contained' : 'outlined'}
-                      >
-                        {isInternal ? 'Internal' : 'Public'}
-                      </Button>
-                    )}
+              {canAddComments() && (
+                <Box sx={{ mb: 3 }}>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={3}
+                    placeholder="Add a comment..."
+                    value={newComment}
+                    onChange={(e) => setNewComment(e.target.value)}
+                    sx={{ mb: 1 }}
+                  />
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                      {canCreateInternalComments() && (
+                        <Button
+                          size="small"
+                          startIcon={isInternal ? <VisibilityOff /> : <Visibility />}
+                          onClick={() => setIsInternal(!isInternal)}
+                          color={isInternal ? 'warning' : 'inherit'}
+                          variant={isInternal ? 'contained' : 'outlined'}
+                        >
+                          {isInternal ? 'Internal' : 'Public'}
+                        </Button>
+                      )}
+                    </Box>
+                    <Button
+                      variant="contained"
+                      startIcon={<Send />}
+                      onClick={handleAddComment}
+                      disabled={!newComment.trim()}
+                    >
+                      Add Comment
+                    </Button>
                   </Box>
-                  <Button
-                    variant="contained"
-                    startIcon={<Send />}
-                    onClick={handleAddComment}
-                    disabled={!newComment.trim() || createCommentMutation.isLoading}
-                  >
-                    {createCommentMutation.isLoading ? 'Adding...' : 'Add Comment'}
-                  </Button>
                 </Box>
-              </Box>
+              )}
 
               <Divider sx={{ mb: 2 }} />
 
@@ -390,65 +636,96 @@ const TicketDetail: React.FC = () => {
                 <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
                   <CircularProgress />
                 </Box>
-              ) : filteredComments.length === 0 ? (
+              ) : comments.length === 0 ? (
                 <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
                   No comments yet
                 </Typography>
               ) : (
                 <Box>
-                  {filteredComments.map((comment: Comment) => (
+                  {comments.map((comment: Comment) => (
                     <Box key={comment._id} sx={{ mb: 2 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 1 }}>
-                        <Avatar sx={{ mr: 1, width: 32, height: 32 }}>
-                          {comment.author.firstName[0]}
-                        </Avatar>
-                        <Box sx={{ flexGrow: 1 }}>
-                                                     <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
-                             <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
-                               {comment.author.firstName} {comment.author.lastName}
-                             </Typography>
-                             {comment.isInternal && (
-                               <Chip 
-                                 label="Internal" 
-                                 size="small" 
-                                 color="warning" 
-                                 sx={{ ml: 1 }}
-                               />
-                             )}
-                             {comment.content.startsWith('**System Update:**') && (
-                               <Chip 
-                                 label="System" 
-                                 size="small" 
-                                 color="info" 
-                                 sx={{ ml: 1 }}
-                               />
-                             )}
-                             {comment.content.startsWith('**Ticket Created:**') && (
-                               <Chip 
-                                 label="Created" 
-                                 size="small" 
-                                 color="success" 
-                                 sx={{ ml: 1 }}
-                               />
-                             )}
-                             <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
-                               {new Date(comment.createdAt).toLocaleString()}
-                             </Typography>
-                           </Box>
-                           <Typography 
-                             variant="body2" 
-                             sx={{ 
-                               whiteSpace: 'pre-wrap',
-                               ...(comment.content.startsWith('**') && {
-                                 fontStyle: 'italic',
-                                 color: 'text.secondary'
-                               })
-                             }}
-                           >
-                             {comment.content}
-                           </Typography>
+                      {comment.content.startsWith('**') ? (
+                        // Sistem poruke - bez avatara, bele pozadine
+                        <Box sx={{ 
+                          p: 2, 
+                          bgcolor: 'white', 
+                          borderRadius: 1, 
+                          border: '1px solid',
+                          borderColor: 'grey.200'
+                        }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                            {comment.content.startsWith('**System Update:**') && (
+                              <Chip 
+                                label="System" 
+                                size="small" 
+                                color="info" 
+                                sx={{ mr: 1 }}
+                              />
+                            )}
+                            {comment.content.startsWith('**Ticket Created:**') && (
+                              <Chip 
+                                label="Created" 
+                                size="small" 
+                                color="success" 
+                                sx={{ mr: 1 }}
+                              />
+                            )}
+                            <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                              {new Date(comment.createdAt).toLocaleString()}
+                            </Typography>
+                          </Box>
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              whiteSpace: 'pre-wrap',
+                              color: 'text.secondary',
+                              fontStyle: 'italic',
+                              fontSize: '0.875rem'
+                            }}
+                          >
+                            {comment.content.replace('**System Update:**', '').replace('**Ticket Created:**', '')}
+                          </Typography>
                         </Box>
-                      </Box>
+                      ) : (
+                        // Obične poruke - sa avatarom, sive pozadine
+                        <Box sx={{ 
+                          p: 2, 
+                          bgcolor: 'grey.50', 
+                          borderRadius: 1, 
+                          border: '1px solid',
+                          borderColor: 'grey.200'
+                        }}>
+                          <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 1 }}>
+                            <Avatar sx={{ mr: 1, width: 32, height: 32 }}>
+                              {comment.author.firstName[0]}
+                            </Avatar>
+                            <Box sx={{ flexGrow: 1 }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
+                                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                                  {comment.author.firstName} {comment.author.lastName}
+                                </Typography>
+                                {comment.isInternal && (
+                                  <Chip 
+                                    label="Internal" 
+                                    size="small" 
+                                    color="warning" 
+                                    sx={{ ml: 1 }}
+                                  />
+                                )}
+                                <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                                  {new Date(comment.createdAt).toLocaleString()}
+                                </Typography>
+                              </Box>
+                              <Typography 
+                                variant="body2" 
+                                sx={{ whiteSpace: 'pre-wrap' }}
+                              >
+                                {comment.content}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        </Box>
+                      )}
                       <Divider />
                     </Box>
                   ))}
@@ -456,106 +733,9 @@ const TicketDetail: React.FC = () => {
               )}
             </CardContent>
           </Card>
-        </Grid>
 
-        {/* Sidebar */}
-        <Grid item xs={12} md={4}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Ticket Info
-              </Typography>
-              
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Status
-                </Typography>
-                <Chip 
-                  label={ticket.status.toUpperCase()} 
-                  color={getStatusColor(ticket.status)}
-                  size="small"
-                  sx={{ mt: 0.5 }}
-                />
-              </Box>
 
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Priority
-                </Typography>
-                <Chip 
-                  label={ticket.priority.toUpperCase()} 
-                  color={getPriorityColor(ticket.priority)}
-                  size="small"
-                  sx={{ mt: 0.5 }}
-                />
-              </Box>
 
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Category
-                </Typography>
-                <Chip 
-                  label={ticket.category.replace('_', ' ').toUpperCase()} 
-                  variant="outlined"
-                  size="small"
-                  sx={{ mt: 0.5 }}
-                />
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Assignee
-                </Typography>
-                <Typography variant="body2">
-                  {ticket.assignee ? `${ticket.assignee.firstName} ${ticket.assignee.lastName}` : 'Unassigned'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Company
-                </Typography>
-                <Typography variant="body2">
-                  {ticket.company.name}
-                </Typography>
-              </Box>
-
-              <Box>
-                <Typography variant="body2" color="text.secondary">
-                  Created
-                </Typography>
-                <Typography variant="body2">
-                  {new Date(ticket.createdAt).toLocaleDateString()}
-                </Typography>
-              </Box>
-
-              <Box sx={{ mt: 2 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                  Activity
-                </Typography>
-                <Typography variant="body2">
-                  {comments.length} comments
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Last updated: {new Date(ticket.updatedAt).toLocaleDateString()}
-                </Typography>
-                
-                {/* Recent changes */}
-                {comments.filter((c: Comment) => c.content.startsWith('**')).slice(0, 3).map((comment: Comment) => (
-                  <Box key={comment._id} sx={{ mt: 1, p: 1, bgcolor: 'grey.50', borderRadius: 1 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      {new Date(comment.createdAt).toLocaleDateString()}
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontSize: '0.75rem', fontStyle: 'italic' }}>
-                      {comment.content.replace('**System Update:**', '').replace('**Ticket Created:**', '')}
-                    </Typography>
-                  </Box>
-                ))}
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
 
       {/* Edit Ticket Dialog */}
       <Dialog open={showEditDialog} onClose={() => setShowEditDialog(false)} maxWidth="sm" fullWidth>
@@ -635,6 +815,38 @@ const TicketDetail: React.FC = () => {
             disabled={updateTicketMutation.isLoading}
           >
             {updateTicketMutation.isLoading ? 'Updating...' : 'Update Ticket'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Reopen Request Dialog */}
+      <Dialog open={showReopenDialog} onClose={() => setShowReopenDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Request Ticket Reopen</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Please provide a detailed reason why you want this ticket to be reopened. 
+            An admin will review your request.
+          </Typography>
+          <TextField
+            fullWidth
+            multiline
+            rows={4}
+            label="Reason for reopening"
+            value={reopenReason}
+            onChange={(e) => setReopenReason(e.target.value)}
+            placeholder="Please explain why this ticket should be reopened..."
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowReopenDialog(false)}>Cancel</Button>
+          <Button 
+            variant="contained" 
+            color="warning"
+            onClick={handleRequestReopen}
+            disabled={requestReopenMutation.isLoading}
+          >
+            {requestReopenMutation.isLoading ? 'Submitting...' : 'Submit Request'}
           </Button>
         </DialogActions>
       </Dialog>

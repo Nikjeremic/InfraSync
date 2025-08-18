@@ -327,6 +327,7 @@ router.put('/:id', auth, [
   body('firstName').optional().trim().isLength({ min: 2 }),
   body('lastName').optional().trim().isLength({ min: 2 }),
   body('email').optional().isEmail().normalizeEmail(),
+  body('password').optional().isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
   body('role').optional().isIn(['admin', 'agent', 'user', 'manager']),
   body('company').optional().isMongoId().withMessage('Invalid company ID'),
   body('subscription').optional().isIn(['free', 'basic', 'premium', 'enterprise']),
@@ -348,13 +349,17 @@ router.put('/:id', auth, [
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    // Only admins can change roles and subscriptions
+    // Only admins can change roles, subscriptions, and passwords
     if (req.body.role && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Only admins can change user roles' });
     }
 
     if (req.body.subscription && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Only admins can change subscriptions' });
+    }
+
+    if (req.body.password && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admins can change user passwords' });
     }
 
     // Check if company exists if provided
@@ -369,13 +374,65 @@ router.put('/:id', auth, [
     const oldUser = await User.findById(req.params.id);
     const oldCompanyId = oldUser?.company;
 
+    // If password is being updated, we need to use save() to trigger pre('save') hook
+    if (req.body.password) {
+      oldUser.password = req.body.password;
+      await oldUser.save();
+      
+      // Get updated user without password
+      const user = await User.findById(req.params.id)
+        .select('-password')
+        .populate('company', 'name');
+      
+      // Update other fields if any
+      if (Object.keys(req.body).some(key => key !== 'password')) {
+        const updateData = { ...req.body };
+        delete updateData.password; // Remove password from update data
+        
+        await User.findByIdAndUpdate(
+          req.params.id,
+          updateData,
+          { new: true, runValidators: true }
+        );
+      }
+      
+      // Return updated user
+      const updatedUser = await User.findById(req.params.id)
+        .select('-password')
+        .populate('company', 'name');
+      
+      // Update company stats if company changed
+      if (oldCompanyId !== updatedUser.company?._id) {
+        const Company = mongoose.model('Company');
+        
+        // Update old company stats
+        if (oldCompanyId) {
+          const oldCompany = await Company.findById(oldCompanyId);
+          if (oldCompany) {
+            await oldCompany.updateStats();
+          }
+        }
+        
+        // Update new company stats
+        if (updatedUser.company?._id) {
+          const newCompany = await Company.findById(updatedUser.company._id);
+          if (newCompany) {
+            await newCompany.updateStats();
+          }
+        }
+      }
+      
+      return res.json(updatedUser);
+    }
+
+    // If no password update, use regular update
     const user = await User.findByIdAndUpdate(
       req.params.id,
       req.body,
       { new: true, runValidators: true }
     ).select('-password').populate('company', 'name');
 
-    // Update company stats if company changed
+    // Update company stats if company changed (only for non-password updates)
     if (oldCompanyId !== user.company?._id) {
       const Company = mongoose.model('Company');
       

@@ -210,6 +210,24 @@ export const ticketsAPI = {
   addInternalNote: (id: string, content: string) =>
     api.post(`/tickets/${id}/internal-notes`, { content }),
   
+  // Comments
+  getComments: (id: string) => api.get(`/tickets/${id}/comments`),
+  
+  addComment: (id: string, content: string, isInternal?: boolean) =>
+    api.post(`/tickets/${id}/comments`, { content, isInternal }),
+  
+  // Reopen requests
+  getReopenRequests: (id: string) => api.get(`/tickets/${id}/reopen-requests`),
+  
+  requestReopen: (id: string, reason: string) =>
+    api.post(`/tickets/${id}/reopen-request`, { reason }),
+  
+  approveReopen: (id: string, requestId: string, reviewNote?: string) =>
+    api.put(`/tickets/${id}/reopen-request/${requestId}/approve`, { reviewNote }),
+  
+  rejectReopen: (id: string, requestId: string, reviewNote?: string) =>
+    api.put(`/tickets/${id}/reopen-request/${requestId}/reject`, { reviewNote }),
+  
   // Statistics
   getStats: (params?: { company?: string }) => api.get('/tickets/stats/overview', { params }),
 };

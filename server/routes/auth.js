@@ -137,7 +137,28 @@ router.post('/login', [
 router.get('/me', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('-password');
-    res.json(user);
+    
+    // Map _id to id to match frontend expectations
+    const userResponse = {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      role: user.role,
+      subscription: user.subscription,
+      avatar: user.avatar,
+      permissions: user.permissions,
+      preferences: user.preferences,
+      company: user.company,
+      timezone: user.timezone,
+      isActive: user.isActive,
+      loginCount: user.loginCount,
+      lastLogin: user.lastLogin,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    };
+    
+    res.json(userResponse);
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({ message: 'Server error' });

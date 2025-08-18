@@ -630,124 +630,132 @@ const Tickets: React.FC = () => {
       </Box>
 
       {/* Tickets List */}
-      <Grid container spacing={3}>
-                 {filteredTickets.map((ticket: Ticket) => (
-          <Grid item xs={12} md={6} lg={4} key={ticket._id}>
-            <Card sx={{ height: '100%', position: 'relative' }}>
-              <CardContent>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+      <List sx={{ bgcolor: 'background.paper', borderRadius: 1, border: 1, borderColor: 'divider' }}>
+        {filteredTickets.map((ticket: Ticket, index: number) => (
+          <Box key={ticket._id}>
+            <ListItem
+              sx={{
+                py: 2,
+                '&:hover': { bgcolor: 'action.hover' },
+                cursor: 'pointer'
+              }}
+              onClick={() => navigate(`/tickets/${ticket._id}`)}
+            >
+              <ListItemAvatar>
+                <Avatar sx={{ bgcolor: getStatusColor(ticket.status) === 'primary' ? 'primary.main' : 'grey.500' }}>
+                  <Assignment />
+                </Avatar>
+              </ListItemAvatar>
+              
+              <ListItemText
+                primary={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                    <Typography variant="h6" component="span" sx={{ fontWeight: 'bold' }}>
+                      {ticket.ticketNumber}
+                    </Typography>
+                    <Typography variant="body1" component="span" sx={{ color: 'text.secondary' }}>
+                      {ticket.title}
+                    </Typography>
+                  </Box>
+                }
+                secondary={
                   <Box>
-                                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
-                     <Typography 
-                       variant="h6" 
-                       component="h3" 
-                       sx={{ fontWeight: 'bold', cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
-                       onClick={() => navigate(`/tickets/${ticket._id}`)}
-                     >
-                       {ticket.ticketNumber}
-                     </Typography>
-                     <OpenInNew sx={{ fontSize: 16, color: 'text.secondary', cursor: 'pointer' }} />
-                   </Box>
-                   <Typography 
-                     variant="body1" 
-                     sx={{ mb: 1, cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
-                     onClick={() => navigate(`/tickets/${ticket._id}`)}
-                   >
-                     {ticket.title}
-                   </Typography>
-                  </Box>
-                  <Box sx={{ display: 'flex', gap: 1 }}>
-                    {getPriorityIcon(ticket.priority)}
-                    <Chip
-                      label={ticket.priority}
-                      color={getPriorityColor(ticket.priority)}
-                      size="small"
-                    />
-                  </Box>
-                </Box>
-
-                <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
-                  <Chip
-                    label={ticket.status}
-                    color={getStatusColor(ticket.status)}
-                    size="small"
-                  />
-                  <Chip
-                    label={ticket.category}
-                    variant="outlined"
-                    size="small"
-                  />
-                  {ticket.sla.isBreached && (
-                    <Chip
-                      icon={<Warning />}
-                      label="SLA Breached"
-                      color="error"
-                      size="small"
-                    />
-                  )}
-                </Box>
-
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                    <Assignment sx={{ fontSize: 16, mr: 0.5, verticalAlign: 'middle' }} />
-                    {ticket.assignee ? `${ticket.assignee.firstName} ${ticket.assignee.lastName}` : 'Unassigned'}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                    <Business sx={{ fontSize: 16, mr: 0.5, verticalAlign: 'middle' }} />
-                    {ticket.company.name}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    <Schedule sx={{ fontSize: 16, mr: 0.5, verticalAlign: 'middle' }} />
-                    {formatTime(ticket.actualTime)} / {formatTime(ticket.estimatedTime)}
-                  </Typography>
-                </Box>
-
-                {ticket.tags.length > 0 && (
-                  <Box sx={{ mb: 2 }}>
-                                       {ticket.tags.map((tag: string, index: number) => (
-                     <Chip
-                       key={index}
-                       label={tag}
-                       size="small"
-                       sx={{ mr: 0.5, mb: 0.5 }}
-                     />
-                   ))}
-                  </Box>
-                )}
-
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Typography variant="caption" color="text.secondary">
-                    {new Date(ticket.createdAt).toLocaleDateString()}
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Tooltip title={hasActiveTimeEntry(ticket) ? 'Stop tracking' : 'Start tracking'}>
-                      <IconButton
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                      <Chip
+                        label={ticket.status}
+                        color={getStatusColor(ticket.status)}
                         size="small"
-                        color={hasActiveTimeEntry(ticket) ? 'error' : 'primary'}
-                        onClick={() => hasActiveTimeEntry(ticket) 
+                      />
+                      <Chip
+                        label={ticket.category}
+                        variant="outlined"
+                        size="small"
+                      />
+                      <Chip
+                        label={ticket.priority}
+                        color={getPriorityColor(ticket.priority)}
+                        size="small"
+                      />
+                      {ticket.sla.isBreached && (
+                        <Chip
+                          icon={<Warning />}
+                          label="SLA Breached"
+                          color="error"
+                          size="small"
+                        />
+                      )}
+                    </Box>
+                    
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1, flexWrap: 'wrap' }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center' }}>
+                        <Assignment sx={{ fontSize: 16, mr: 0.5 }} />
+                        {ticket.assignee ? `${ticket.assignee.firstName} ${ticket.assignee.lastName}` : 'Unassigned'}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center' }}>
+                        <Business sx={{ fontSize: 16, mr: 0.5 }} />
+                        {ticket.company.name}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center' }}>
+                        <Schedule sx={{ fontSize: 16, mr: 0.5 }} />
+                        {formatTime(ticket.actualTime)} / {formatTime(ticket.estimatedTime)}
+                      </Typography>
+                    </Box>
+                    
+                    {ticket.tags.length > 0 && (
+                      <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                        {ticket.tags.map((tag: string, tagIndex: number) => (
+                          <Chip
+                            key={tagIndex}
+                            label={tag}
+                            size="small"
+                            variant="outlined"
+                          />
+                        ))}
+                      </Box>
+                    )}
+                  </Box>
+                }
+              />
+              
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1, ml: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {new Date(ticket.createdAt).toLocaleDateString()}
+                </Typography>
+                
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Tooltip title={hasActiveTimeEntry(ticket) ? 'Stop tracking' : 'Start tracking'}>
+                    <IconButton
+                      size="small"
+                      color={hasActiveTimeEntry(ticket) ? 'error' : 'primary'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        hasActiveTimeEntry(ticket) 
                           ? handleStopTracking(ticket) 
-                          : handleStartTracking(ticket)
-                        }
-                      >
-                        {hasActiveTimeEntry(ticket) ? <Stop /> : <PlayArrow />}
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip title={isWatching(ticket) ? 'Remove from watchlist' : 'Add to watchlist'}>
-                      <IconButton
-                        size="small"
-                        color={isWatching(ticket) ? 'primary' : 'default'}
-                        onClick={() => handleWatchToggle(ticket)}
-                      >
-                        <WatchLater />
-                      </IconButton>
-                    </Tooltip>
-                  </Box>
+                          : handleStartTracking(ticket);
+                      }}
+                    >
+                      {hasActiveTimeEntry(ticket) ? <Stop /> : <PlayArrow />}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title={isWatching(ticket) ? 'Remove from watchlist' : 'Add to watchlist'}>
+                    <IconButton
+                      size="small"
+                      color={isWatching(ticket) ? 'primary' : 'default'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleWatchToggle(ticket);
+                      }}
+                    >
+                      <WatchLater />
+                    </IconButton>
+                  </Tooltip>
                 </Box>
-              </CardContent>
-            </Card>
-          </Grid>
+              </Box>
+            </ListItem>
+            {index < filteredTickets.length - 1 && <Divider />}
+          </Box>
         ))}
-      </Grid>
+      </List>
 
       {filteredTickets.length === 0 && (
         <Box sx={{ textAlign: 'center', py: 8 }}>

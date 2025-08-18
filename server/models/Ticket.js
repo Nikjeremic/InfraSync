@@ -184,7 +184,53 @@ const ticketSchema = new mongoose.Schema({
     },
     interval: Number,
     endDate: Date
-  }
+  },
+  // Reopen request fields
+  reopenRequests: [{
+    requestedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    reason: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending'
+    },
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    reviewNote: String,
+    requestedAt: {
+      type: Date,
+      default: Date.now
+    },
+    reviewedAt: Date
+  }],
+  // Ticket activity log
+  activityLog: [{
+    action: {
+      type: String,
+      enum: ['created', 'updated', 'status_changed', 'assigned', 'reopened', 'reopen_requested', 'closed'],
+      required: true
+    },
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    details: String,
+    timestamp: {
+      type: Date,
+      default: Date.now
+    }
+  }]
 }, {
   timestamps: true
 });
@@ -304,6 +350,170 @@ ticketSchema.virtual('totalTimeSpent').get(function() {
 ticketSchema.virtual('activeTimeEntry').get(function() {
   return this.timeEntries.find(entry => entry.isActive);
 });
+
+// Request ticket reopen
+ticketSchema.methods.requestReopen = function(userId, reason) {
+  const reopenRequest = {
+    requestedBy: userId,
+    reason: reason,
+    status: 'pending',
+    requestedAt: new Date()
+  };
+  
+  this.reopenRequests.push(reopenRequest);
+  
+  // Add to activity log
+  this.activityLog.push({
+    action: 'reopen_requested',
+    user: userId,
+    details: `Reopen requested: ${reason}`,
+    timestamp: new Date()
+  });
+  
+  return this.save();
+};
+
+// Approve reopen request
+ticketSchema.methods.approveReopen = function(adminId, requestId, reviewNote = '') {
+  const request = this.reopenRequests.id(requestId);
+  if (request && request.status === 'pending') {
+    request.status = 'approved';
+    request.reviewedBy = adminId;
+    request.reviewNote = reviewNote;
+    request.reviewedAt = new Date();
+    
+    // Change status back to open
+    this.status = 'open';
+    
+    // Add to activity log
+    this.activityLog.push({
+      action: 'reopened',
+      user: adminId,
+      details: `Ticket reopened by admin: ${reviewNote}`,
+      timestamp: new Date()
+    });
+    
+    return this.save();
+  }
+  return Promise.reject(new Error('Invalid reopen request'));
+};
+
+// Reject reopen request
+ticketSchema.methods.rejectReopen = function(adminId, requestId, reviewNote = '') {
+  const request = this.reopenRequests.id(requestId);
+  if (request && request.status === 'pending') {
+    request.status = 'rejected';
+    request.reviewedBy = adminId;
+    request.reviewNote = reviewNote;
+    request.reviewedAt = new Date();
+    
+    // Add to activity log
+    this.activityLog.push({
+      action: 'status_changed',
+      user: adminId,
+      details: `Reopen request rejected: ${reviewNote}`,
+      timestamp: new Date()
+    });
+    
+    return this.save();
+  }
+  return Promise.reject(new Error('Invalid reopen request'));
+};
+
+// Check if user can close ticket
+ticketSchema.methods.canUserClose = function(userId, userRole) {
+  // Admin and managers can always close tickets
+  if (['admin', 'manager'].includes(userRole)) {
+    return true;
+  }
+  
+  // Agents can close tickets if assigned
+  if (userRole === 'agent') {
+    return this.assignee?.toString() === userId.toString();
+  }
+  
+  // Users can close their own tickets if they're open or in_progress
+  if (userRole === 'user') {
+    return this.reporter.toString() === userId.toString() && 
+           ['open', 'in_progress'].includes(this.status);
+  }
+  
+  return false;
+};
+
+// Check if user can edit ticket
+ticketSchema.methods.canUserEdit = function(userId, userRole) {
+  // Admin and managers can always edit
+  if (['admin', 'manager'].includes(userRole)) {
+    return true;
+  }
+  
+  // Agents can edit if assigned or if ticket is open/in_progress
+  if (userRole === 'agent') {
+    return this.assignee?.toString() === userId.toString() || 
+           ['open', 'in_progress'].includes(this.status);
+  }
+  
+  // Users cannot edit tickets (only close them)
+  if (userRole === 'user') {
+    return false;
+  }
+  
+  return false;
+};
+
+// Check if user can view ticket
+ticketSchema.methods.canUserView = function(userId, userRole) {
+  // Admin and managers can always view
+  if (['admin', 'manager'].includes(userRole)) {
+    return true;
+  }
+  
+  // Agents can view if assigned or if ticket is open/in_progress
+  if (userRole === 'agent') {
+    return this.assignee?.toString() === userId.toString() || 
+           ['open', 'in_progress'].includes(this.status);
+  }
+  
+  // Users can always view their own tickets regardless of status
+  if (userRole === 'user') {
+    return this.reporter.toString() === userId.toString();
+  }
+  
+  return false;
+};
+
+// Check if user can add comments
+ticketSchema.methods.canUserAddComments = function(userId, userRole) {
+  // Admin and managers can always add comments
+  if (['admin', 'manager'].includes(userRole)) {
+    return true;
+  }
+  
+  // Agents can add comments if assigned or if ticket is open/in_progress
+  if (userRole === 'agent') {
+    return this.assignee?.toString() === userId.toString() || 
+           ['open', 'in_progress'].includes(this.status);
+  }
+  
+  // Users can add comments to their own tickets if they're not resolved
+  if (userRole === 'user') {
+    return this.reporter.toString() === userId.toString() && 
+           this.status !== 'resolved';
+  }
+  
+  return false;
+};
+
+// Check if user can request reopen
+ticketSchema.methods.canUserRequestReopen = function(userId, userRole) {
+  // Only users can request reopen for their own closed tickets
+  if (userRole === 'user') {
+    return this.reporter.toString() === userId.toString() && 
+           this.status === 'closed';
+  }
+  return false;
+};
 
 // Indexes
 ticketSchema.index({ status: 1 });
