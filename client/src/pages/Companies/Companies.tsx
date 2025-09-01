@@ -52,6 +52,10 @@ interface Company {
     activeTickets: number;
     usersWithInheritedSubscription?: number;
   };
+  billing?: {
+    hourlyRate?: number;
+    currency?: string;
+  };
   createdAt: string;
 }
 
@@ -66,6 +70,10 @@ const Companies: React.FC = () => {
     website: '',
     email: '',
     phone: '',
+    billing: {
+      hourlyRate: 0,
+      currency: 'USD'
+    },
     subscription: {
       plan: 'free',
       isActive: true
@@ -137,6 +145,10 @@ const Companies: React.FC = () => {
         website: company.website || '',
         email: company.email || '',
         phone: company.phone || '',
+        billing: {
+          hourlyRate: company.billing?.hourlyRate || 0,
+          currency: company.billing?.currency || 'USD'
+        },
         subscription: {
           plan: company.subscription.plan,
           isActive: company.subscription.isActive
@@ -151,6 +163,7 @@ const Companies: React.FC = () => {
         website: '',
         email: '',
         phone: '',
+        billing: { hourlyRate: 0, currency: 'USD' },
         subscription: { plan: 'free', isActive: true }
       });
     }
@@ -298,6 +311,14 @@ const Companies: React.FC = () => {
                     </Typography>
                   </Box>
                 </Box>
+                {typeof company.billing?.hourlyRate === 'number' && (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Billing</Typography>
+                    <Typography variant="body2">
+                      Rate: {company.billing?.hourlyRate} {company.billing?.currency || 'USD'} / h
+                    </Typography>
+                  </Box>
+                )}
 
                 <Box sx={{ display: 'flex', gap: 1 }}>
                   <Button
@@ -399,6 +420,24 @@ const Companies: React.FC = () => {
                   <MenuItem value="enterprise">Enterprise</MenuItem>
                 </Select>
               </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={3}>
+              <TextField
+                fullWidth
+                label="Hourly Rate"
+                type="number"
+                inputProps={{ min: 0, step: 0.01 }}
+                value={formData.billing.hourlyRate}
+                onChange={(e) => setFormData({ ...formData, billing: { ...formData.billing, hourlyRate: Number(e.target.value) } })}
+              />
+            </Grid>
+            <Grid item xs={12} sm={3}>
+              <TextField
+                fullWidth
+                label="Currency (ISO)"
+                value={formData.billing.currency}
+                onChange={(e) => setFormData({ ...formData, billing: { ...formData.billing, currency: e.target.value.toUpperCase() } })}
+              />
             </Grid>
           </Grid>
         </DialogContent>

@@ -51,6 +51,16 @@ const companySchema = new mongoose.Schema({
     type: String,
     default: '#dc004e'
   },
+  billing: {
+    hourlyRate: {
+      type: Number,
+      default: 0
+    },
+    currency: {
+      type: String,
+      default: 'USD'
+    }
+  },
   settings: {
     timezone: {
       type: String,

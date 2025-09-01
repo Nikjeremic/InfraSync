@@ -5,9 +5,35 @@ const Ticket = require('../models/Ticket');
 const User = require('../models/User');
 const Company = require('../models/Company');
 const { auth, requireRole, requirePermission } = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const { createNotification } = require('./notifications');
 
 const router = express.Router();
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+
+// Multer storage and limits
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const safeOriginal = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    cb(null, `${unique}-${safeOriginal}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+});
 
 // @route   GET /api/tickets
 // @desc    Get all tickets with filtering and pagination
@@ -97,6 +123,38 @@ router.get('/', auth, [
     });
   } catch (error) {
     console.error('Get tickets error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   POST /api/tickets/:id/attachments
+// @desc    Upload attachment to ticket (max 2MB)
+// @access  Private
+router.post('/:id/attachments', auth, upload.single('file'), async (req, res) => {
+  try {
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+
+    const fileMeta = {
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      url: `/uploads/${req.file.filename}`,
+      uploadedBy: req.user.id,
+    };
+
+    ticket.attachments.push(fileMeta);
+    await ticket.save();
+
+    res.status(201).json(fileMeta);
+  } catch (error) {
+    console.error('Upload attachment error:', error);
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ message: 'File too large. Max 2MB' });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -691,6 +749,164 @@ router.get('/:id/reopen-requests', auth, async (req, res) => {
   }
 });
 
+// @route   GET /api/tickets/reopen-requests/all
+// @desc    Get all pending reopen requests (admin only)
+// @access  Private (admin only)
+router.get('/reopen-requests/all', auth, requireRole(['admin']), async (req, res) => {
+  try {
+    const tickets = await Ticket.find({
+      'reopenRequests.status': 'pending'
+    })
+    .populate('reporter', 'firstName lastName email')
+    .populate('assignee', 'firstName lastName email')
+    .populate('company', 'name')
+    .populate('reopenRequests.requestedBy', 'firstName lastName email')
+    .sort({ updatedAt: -1 });
+
+    // Flatten reopen requests with ticket info
+    const allRequests = [];
+    tickets.forEach(ticket => {
+      ticket.reopenRequests
+        .filter(req => req.status === 'pending')
+        .forEach(request => {
+          allRequests.push({
+            ...request.toObject(),
+            ticket: {
+              _id: ticket._id,
+              title: ticket.title,
+              ticketNumber: ticket.ticketNumber,
+              status: ticket.status,
+              priority: ticket.priority
+            }
+          });
+        });
+    });
+
+    res.json({ data: allRequests });
+  } catch (error) {
+    console.error('Error fetching all reopen requests:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   PUT /api/tickets/reopen-request/:requestId/approve
+// @desc    Approve reopen request by requestId (admin only)
+// @access  Private (admin only)
+router.put('/reopen-request/:requestId/approve', auth, requireRole(['admin']), [
+  body('reviewNote').optional().isString().trim()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { requestId } = req.params;
+    const { reviewNote } = req.body;
+
+    // Find ticket containing this reopen request
+    const ticket = await Ticket.findOne({
+      'reopenRequests._id': requestId
+    }).populate('reporter', 'firstName lastName email');
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Reopen request not found' });
+    }
+
+    const request = ticket.reopenRequests.id(requestId);
+    if (!request) {
+      return res.status(404).json({ message: 'Reopen request not found' });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({ message: 'Request already processed' });
+    }
+
+    // Update request status
+    request.status = 'approved';
+    request.reviewedBy = req.user.id;
+    request.reviewedAt = new Date();
+    if (reviewNote) request.reviewNote = reviewNote;
+
+    // Reopen the ticket
+    ticket.status = 'open';
+    ticket.updatedAt = new Date();
+
+    await ticket.save();
+
+    // Create notification for requester
+    await createNotification({
+      user: request.requestedBy,
+      type: 'ticket_reopened',
+      title: 'Reopen Request Approved',
+      message: `Your request to reopen ticket #${ticket.ticketNumber} has been approved.${reviewNote ? ` Note: ${reviewNote}` : ''}`,
+      relatedTicket: ticket._id
+    });
+
+    res.json({ message: 'Reopen request approved and ticket reopened' });
+  } catch (error) {
+    console.error('Error approving reopen request:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   PUT /api/tickets/reopen-request/:requestId/reject
+// @desc    Reject reopen request by requestId (admin only)
+// @access  Private (admin only)
+router.put('/reopen-request/:requestId/reject', auth, requireRole(['admin']), [
+  body('reviewNote').optional().isString().trim()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { requestId } = req.params;
+    const { reviewNote } = req.body;
+
+    // Find ticket containing this reopen request
+    const ticket = await Ticket.findOne({
+      'reopenRequests._id': requestId
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Reopen request not found' });
+    }
+
+    const request = ticket.reopenRequests.id(requestId);
+    if (!request) {
+      return res.status(404).json({ message: 'Reopen request not found' });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({ message: 'Request already processed' });
+    }
+
+    // Update request status
+    request.status = 'rejected';
+    request.reviewedBy = req.user.id;
+    request.reviewedAt = new Date();
+    if (reviewNote) request.reviewNote = reviewNote;
+
+    await ticket.save();
+
+    // Create notification for requester
+    await createNotification({
+      user: request.requestedBy,
+      type: 'reopen_rejected',
+      title: 'Reopen Request Rejected',
+      message: `Your request to reopen ticket #${ticket.ticketNumber} has been rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`,
+      relatedTicket: ticket._id
+    });
+
+    res.json({ message: 'Reopen request rejected' });
+  } catch (error) {
+    console.error('Error rejecting reopen request:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // @route   GET /api/tickets/:id/comments
 // @desc    Get all comments for a ticket
 // @access  Private
@@ -733,7 +949,7 @@ router.get('/:id/comments', auth, async (req, res) => {
 // @route   POST /api/tickets/:id/comments
 // @desc    Add a comment to a ticket (reply functionality)
 // @access  Private
-router.post('/:id/comments', auth, [
+router.post('/:id/comments', auth, upload.single('file'), [
   body('content').trim().isLength({ min: 1, max: 2000 }).withMessage('Comment must be between 1 and 2000 characters'),
   body('isInternal').optional().isBoolean().withMessage('isInternal must be a boolean')
 ], async (req, res) => {
@@ -769,6 +985,16 @@ router.post('/:id/comments', auth, [
       isInternal
     });
 
+    if (req.file) {
+      comment.attachments = [{
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        url: `/uploads/${req.file.filename}`
+      }];
+    }
+
     await comment.save();
     await comment.populate('author', 'firstName lastName email avatar');
 
@@ -790,6 +1016,9 @@ router.post('/:id/comments', auth, [
     res.status(201).json(comment);
   } catch (error) {
     console.error('Create comment error:', error);
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ message: 'File too large. Max 2MB' });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 });

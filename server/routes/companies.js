@@ -223,7 +223,10 @@ router.put('/:id', auth, requireRole(['admin']), [
   body('primaryColor').optional().isHexColor(),
   body('secondaryColor').optional().isHexColor(),
   body('isActive').optional().isBoolean(),
-  body('subscription').optional().isObject()
+  body('subscription').optional().isObject(),
+  body('billing').optional().isObject(),
+  body('billing.hourlyRate').optional().isFloat({ min: 0 }),
+  body('billing.currency').optional().isString().isLength({ min: 3, max: 3 })
 ], async (req, res) => {
   try {
     const errors = validationResult(req);

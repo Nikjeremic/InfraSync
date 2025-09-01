@@ -219,6 +219,8 @@ export const ticketsAPI = {
   // Reopen requests
   getReopenRequests: (id: string) => api.get(`/tickets/${id}/reopen-requests`),
   
+  getAllReopenRequests: () => api.get('/tickets/reopen-requests/all'),
+  
   requestReopen: (id: string, reason: string) =>
     api.post(`/tickets/${id}/reopen-request`, { reason }),
   
@@ -227,6 +229,12 @@ export const ticketsAPI = {
   
   rejectReopen: (id: string, requestId: string, reviewNote?: string) =>
     api.put(`/tickets/${id}/reopen-request/${requestId}/reject`, { reviewNote }),
+  
+  approveReopenRequest: (requestId: string, reviewNote?: string) =>
+    api.put(`/tickets/reopen-request/${requestId}/approve`, { reviewNote }),
+  
+  rejectReopenRequest: (requestId: string, reviewNote?: string) =>
+    api.put(`/tickets/reopen-request/${requestId}/reject`, { reviewNote }),
   
   // Statistics
   getStats: (params?: { company?: string }) => api.get('/tickets/stats/overview', { params }),
@@ -276,11 +284,45 @@ export const commentsAPI = {
     ticketId: string;
     content: string;
     isInternal?: boolean;
-  }) => api.post('/comments', commentData),
+    file?: File;
+  }) => {
+    // If file exists, send as multipart to tickets route for unified handling
+    if (commentData.file) {
+      const form = new FormData();
+      form.append('content', commentData.content);
+      form.append('isInternal', String(!!commentData.isInternal));
+      form.append('file', commentData.file);
+      return api.post(`/tickets/${commentData.ticketId}/comments`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    }
+    return api.post('/comments', {
+      ticketId: commentData.ticketId,
+      content: commentData.content,
+      isInternal: commentData.isInternal,
+    });
+  },
   
   update: (id: string, content: string) => api.put(`/comments/${id}`, { content }),
   
   delete: (id: string) => api.delete(`/comments/${id}`),
+};
+
+// Invoices API
+export const invoicesAPI = {
+  createForTicket: (data: { ticketId: string; rate: number; currency: string; taxPercent?: number; recipientEmail?: string; }) =>
+    api.post('/invoices', data)
+};
+
+// Attachments API
+export const attachmentsAPI = {
+  upload: (ticketId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post(`/tickets/${ticketId}/attachments`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  }
 };
 
 export default api; 

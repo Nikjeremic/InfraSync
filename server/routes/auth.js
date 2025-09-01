@@ -92,6 +92,13 @@ router.post('/login', [
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
+    // Safeguard: reject accounts with non-bcrypt passwords
+    const pwd = user.password || '';
+    const looksLikeBcrypt = typeof pwd === 'string' && pwd.startsWith('$2') && pwd.length >= 55;
+    if (!looksLikeBcrypt) {
+      return res.status(400).json({ message: 'Account requires password reset. Please reset your password.' });
+    }
+
     // Check if user is active
     if (!user.isActive) {
       return res.status(400).json({ message: 'Account is deactivated' });

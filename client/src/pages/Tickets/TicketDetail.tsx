@@ -21,7 +21,10 @@ import {
   Select,
   MenuItem,
   Alert,
-  CircularProgress
+  CircularProgress,
+  List,
+  ListItem,
+  ListItemText
 } from '@mui/material';
 import {
   ArrowBack,
@@ -38,6 +41,8 @@ import {
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { toast } from 'react-hot-toast';
 import { ticketsAPI, commentsAPI, usersAPI } from '../../services/api';
+import { invoicesAPI } from '../../services/api';
+import { attachmentsAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface Comment {
@@ -62,6 +67,7 @@ const TicketDetail: React.FC = () => {
   
   const [newComment, setNewComment] = useState('');
   const [isInternal, setIsInternal] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [showEditDialog, setShowEditDialog] = useState(false);
 
   const [editData, setEditData] = useState({
@@ -74,7 +80,8 @@ const TicketDetail: React.FC = () => {
   // Reopen request state
   const [showReopenDialog, setShowReopenDialog] = useState(false);
   const [reopenReason, setReopenReason] = useState('');
-  const [showReopenRequests, setShowReopenRequests] = useState(false);
+  const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [closeReason, setCloseReason] = useState('');
 
   // Fetch ticket details
   const { data: ticketData, isLoading: ticketLoading } = useQuery(
@@ -134,36 +141,6 @@ const TicketDetail: React.FC = () => {
     }
   );
 
-  const approveReopenMutation = useMutation(
-    ({ requestId, reviewNote }: { requestId: string; reviewNote?: string }) =>
-      ticketsAPI.approveReopen(id!, requestId, reviewNote),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['reopen-requests', id]);
-        queryClient.invalidateQueries(['ticket', id]);
-        toast.success('Ticket reopened successfully');
-      },
-      onError: (error: any) => {
-        toast.error(error.response?.data?.message || 'Failed to reopen ticket');
-      },
-    }
-  );
-
-  const rejectReopenMutation = useMutation(
-    ({ requestId, reviewNote }: { requestId: string; reviewNote?: string }) =>
-      ticketsAPI.rejectReopen(id!, requestId, reviewNote),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['reopen-requests', id]);
-        queryClient.invalidateQueries(['ticket', id]);
-        toast.success('Reopen request rejected');
-      },
-      onError: (error: any) => {
-        toast.error(error.response?.data?.message || 'Failed to reject reopen request');
-      },
-    }
-  );
-
   const updateTicketMutation = useMutation(
     (data: any) => ticketsAPI.update(id!, data),
     {
@@ -180,6 +157,7 @@ const TicketDetail: React.FC = () => {
   );
 
   const ticket = ticketData?.data;
+  const attachments: any[] = ticket?.attachments || [];
   const comments = commentsData?.data?.comments || [];
   const users = usersData?.data?.users || [];
   const reopenRequests = reopenRequestsData?.data?.reopenRequests || [];
@@ -187,12 +165,17 @@ const TicketDetail: React.FC = () => {
 
   const handleAddComment = () => {
     if (!newComment.trim()) return;
-
-    // Use the new tickets API endpoint for comments
-    ticketsAPI.addComment(id!, newComment, isInternal).then(() => {
+    const canCreateInternal = canCreateInternalComments();
+    commentsAPI.create({ 
+      ticketId: id!, 
+      content: newComment, 
+      isInternal: canCreateInternal ? isInternal : false, 
+      file: pendingFile || undefined 
+    }).then(() => {
       queryClient.invalidateQueries(['comments', id]);
       setNewComment('');
       setIsInternal(false);
+      setPendingFile(null);
       toast.success('Comment added successfully');
     }).catch((error: any) => {
       toast.error(error.response?.data?.message || 'Failed to add comment');
@@ -236,12 +219,33 @@ const TicketDetail: React.FC = () => {
     requestReopenMutation.mutate(reopenReason);
   };
 
-  const handleApproveReopen = (requestId: string, reviewNote?: string) => {
-    approveReopenMutation.mutate({ requestId, reviewNote });
+  const handleCloseTicket = () => {
+    if (user?.role === 'admin') {
+      // Admin can close directly
+      if (window.confirm('Are you sure you want to close this ticket?')) {
+        updateTicketMutation.mutate({ status: 'closed' });
+      }
+    } else {
+      // Others need explanation
+      setShowCloseDialog(true);
+    }
   };
 
-  const handleRejectReopen = (requestId: string, reviewNote?: string) => {
-    rejectReopenMutation.mutate({ requestId, reviewNote });
+  const handleCloseWithReason = () => {
+    if (!closeReason.trim()) {
+      toast.error('Please provide a reason for closing');
+      return;
+    }
+    
+    // Add close reason as comment (internal only if user is staff), then close
+    const isStaff = ['admin', 'manager', 'agent'].includes(user?.role || '');
+    ticketsAPI.addComment(id!, `**Ticket Closed:** ${closeReason}`, isStaff).then(() => {
+      updateTicketMutation.mutate({ status: 'closed' });
+      setShowCloseDialog(false);
+      setCloseReason('');
+    }).catch((error: any) => {
+      toast.error(error.response?.data?.message || 'Failed to close ticket');
+    });
   };
 
   const getStatusColor = (status: string) => {
@@ -409,45 +413,6 @@ const TicketDetail: React.FC = () => {
             Request Reopen
           </Button>
         )}
-        {reopenRequests.length > 0 && (
-          <Button
-            variant="outlined"
-            color="info"
-            onClick={() => setShowReopenRequests(!showReopenRequests)}
-            sx={{ mr: 1 }}
-          >
-            Reopen Requests ({reopenRequests.filter((r: any) => r.status === 'pending').length})
-          </Button>
-        )}
-
-        {canCloseTicket() && ticket.status !== 'closed' && (
-          <Button
-            variant="outlined"
-            color="error"
-            onClick={() => {
-              if (window.confirm('Are you sure you want to close this ticket?')) {
-                updateTicketMutation.mutate({ status: 'closed' });
-              }
-            }}
-            sx={{ mr: 1 }}
-          >
-            Close Ticket
-          </Button>
-        )}
-        {canEditTicket() && ticket.status === 'closed' && (
-          <Button
-            variant="outlined"
-            color="success"
-            onClick={() => {
-              if (window.confirm('Are you sure you want to reopen this ticket?')) {
-                updateTicketMutation.mutate({ status: 'open' });
-              }
-            }}
-            sx={{ mr: 1 }}
-          >
-            Reopen Ticket
-          </Button>
-        )}
       </Box>
 
 
@@ -456,6 +421,8 @@ const TicketDetail: React.FC = () => {
               <Typography variant="h5" component="h2" sx={{ mb: 2 }}>
                 {ticket.title}
               </Typography>
+              
+
               
               <Box sx={{ mb: 3 }}>
                 <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
@@ -519,13 +486,14 @@ const TicketDetail: React.FC = () => {
           </Card>
 
           {/* Quick Actions */}
-          {['admin', 'manager'].includes(user?.role || '') && (
+          {(canCloseTicket() || ['admin', 'manager'].includes(user?.role || '')) && (
             <Card sx={{ mb: 3 }}>
               <CardContent>
                 <Typography variant="h6" sx={{ mb: 2 }}>
                   Quick Actions
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                  {['admin', 'manager'].includes(user?.role || '') && (
                   <Button
                     variant="outlined"
                     startIcon={<Edit />}
@@ -533,19 +501,16 @@ const TicketDetail: React.FC = () => {
                   >
                     Edit Ticket
                   </Button>
+                  )}
                   {canCloseTicket() && ticket.status !== 'closed' ? (
                     <Button
                       variant="outlined"
                       color="error"
-                      onClick={() => {
-                        if (window.confirm('Are you sure you want to close this ticket?')) {
-                          updateTicketMutation.mutate({ status: 'closed' });
-                        }
-                      }}
+                      onClick={handleCloseTicket}
                     >
                       Close Ticket
                     </Button>
-                  ) : canCloseTicket() && (
+                  ) : user?.role === 'admin' && ticket.status === 'closed' && (
                     <Button
                       variant="outlined"
                       color="success"
@@ -556,6 +521,35 @@ const TicketDetail: React.FC = () => {
                       }}
                     >
                       Reopen Ticket
+                    </Button>
+                  )}
+                  {['admin', 'manager'].includes(user?.role || '') && (
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={async () => {
+                        try {
+                                                     const defaultRate = (ticket.company as any)?.billing?.hourlyRate ?? 50;
+                           const defaultCurrency = ((ticket.company as any)?.billing?.currency ?? 'EUR').toUpperCase();
+                           const rateStr = prompt('Enter hourly rate (e.g., 50):', String(defaultRate));
+                           if (rateStr === null) return;
+                           const rate = Number(rateStr);
+                           if (Number.isNaN(rate) || rate < 0) {
+                             toast.error('Invalid rate');
+                             return;
+                           }
+                           const currency = (prompt('Enter currency (ISO, e.g., EUR):', defaultCurrency) || defaultCurrency).toUpperCase();
+                          const taxStr = prompt('Enter tax percent (e.g., 20) or leave blank:', '');
+                          const taxPercent = taxStr ? Number(taxStr) : 0;
+                          const recipient = prompt('Recipient email (leave empty to use company email):', '') || undefined;
+                          await invoicesAPI.createForTicket({ ticketId: id!, rate, currency, taxPercent, recipientEmail: recipient });
+                          toast.success('Invoice generated and sent');
+                        } catch (err: any) {
+                          toast.error(err.response?.data?.message || 'Failed to generate invoice');
+                        }
+                      }}
+                    >
+                      Generate & Send Invoice
                     </Button>
                   )}
                 </Box>
@@ -598,13 +592,13 @@ const TicketDetail: React.FC = () => {
                     fullWidth
                     multiline
                     rows={3}
-                    placeholder="Add a comment..."
+                    placeholder="Write a reply..."
                     value={newComment}
                     onChange={(e) => setNewComment(e.target.value)}
                     sx={{ mb: 1 }}
                   />
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       {canCreateInternalComments() && (
                         <Button
                           size="small"
@@ -616,6 +610,24 @@ const TicketDetail: React.FC = () => {
                           {isInternal ? 'Internal' : 'Public'}
                         </Button>
                       )}
+                      <input
+                        id="comment-file-input"
+                        type="file"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          if (!file) return;
+                          if (file.size > 2 * 1024 * 1024) {
+                            toast.error('File too large. Max 2MB');
+                            e.currentTarget.value = '';
+                            return;
+                          }
+                          setPendingFile(file);
+                        }}
+                      />
+                      <Button size="small" variant="outlined" onClick={() => document.getElementById('comment-file-input')?.click()}>
+                        {pendingFile ? `Attached: ${pendingFile.name}` : 'Attach File (max 2MB)'}
+                      </Button>
                     </Box>
                     <Button
                       variant="contained"
@@ -623,7 +635,7 @@ const TicketDetail: React.FC = () => {
                       onClick={handleAddComment}
                       disabled={!newComment.trim()}
                     >
-                      Add Comment
+                      Reply
                     </Button>
                   </Box>
                 </Box>
@@ -670,6 +682,14 @@ const TicketDetail: React.FC = () => {
                                 sx={{ mr: 1 }}
                               />
                             )}
+                            {comment.content.startsWith('**Ticket Closed:**') && (
+                              <Chip 
+                                label="Closed" 
+                                size="small" 
+                                color="error" 
+                                sx={{ mr: 1 }}
+                              />
+                            )}
                             <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
                               {new Date(comment.createdAt).toLocaleString()}
                             </Typography>
@@ -683,7 +703,7 @@ const TicketDetail: React.FC = () => {
                               fontSize: '0.875rem'
                             }}
                           >
-                            {comment.content.replace('**System Update:**', '').replace('**Ticket Created:**', '')}
+                            {comment.content.replace('**System Update:**', '').replace('**Ticket Created:**', '').replace('**Ticket Closed:**', '')}
                           </Typography>
                         </Box>
                       ) : (
@@ -722,6 +742,24 @@ const TicketDetail: React.FC = () => {
                               >
                                 {comment.content}
                               </Typography>
+                              {/* Comment attachments */}
+                              {(comment as any).attachments?.length > 0 && (
+                                <Box sx={{ mt: 1 }}>
+                                  {(comment as any).attachments.map((att: any) => (
+                                    <Button
+                                      key={att.filename}
+                                      size="small"
+                                      variant="outlined"
+                                      href={att.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      sx={{ mr: 1, mt: 0.5 }}
+                                    >
+                                      📎 {att.originalName || att.filename}
+                                    </Button>
+                                  ))}
+                                </Box>
+                              )}
                             </Box>
                           </Box>
                         </Box>
@@ -847,6 +885,37 @@ const TicketDetail: React.FC = () => {
             disabled={requestReopenMutation.isLoading}
           >
             {requestReopenMutation.isLoading ? 'Submitting...' : 'Submit Request'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Close Ticket Dialog */}
+      <Dialog open={showCloseDialog} onClose={() => setShowCloseDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Close Ticket</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Please provide a reason for closing this ticket.
+          </Typography>
+          <TextField
+            fullWidth
+            multiline
+            rows={3}
+            label="Reason for closing"
+            value={closeReason}
+            onChange={(e) => setCloseReason(e.target.value)}
+            placeholder="Explain why this ticket is being closed..."
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowCloseDialog(false)}>Cancel</Button>
+          <Button 
+            variant="contained" 
+            color="error"
+            onClick={handleCloseWithReason}
+            disabled={updateTicketMutation.isLoading}
+          >
+            {updateTicketMutation.isLoading ? 'Closing...' : 'Close Ticket'}
           </Button>
         </DialogActions>
       </Dialog>

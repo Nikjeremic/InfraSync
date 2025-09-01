@@ -15,6 +15,7 @@ const analyticsRoutes = require('./routes/analytics');
 const { router: notificationRoutes } = require('./routes/notifications');
 const companyRoutes = require('./routes/companies');
 const commentRoutes = require('./routes/comments');
+const invoiceRoutes = require('./routes/invoices');
 
 const app = express();
 const server = http.createServer(app);
@@ -24,6 +25,9 @@ const io = socketIo(server, {
     methods: ["GET", "POST"]
   }
 });
+
+// Trust only loopback proxies (safe for local/dev)
+app.set('trust proxy', 'loopback');
 
 // Connect to MongoDB
 connectDB();
@@ -52,6 +56,10 @@ app.use(cors({
   optionsSuccessStatus: 200
 }));
 
+// Static files for uploads
+const path = require('path');
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/tickets', ticketRoutes);
@@ -60,6 +68,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/companies', companyRoutes);
 app.use('/api/comments', commentRoutes);
+app.use('/api/invoices', invoiceRoutes);
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {

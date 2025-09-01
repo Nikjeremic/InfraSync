@@ -79,6 +79,16 @@ const ticketSchema = new mongoose.Schema({
       default: false
     }
   }],
+  // Attachments
+  attachments: [{
+    filename: String,
+    originalName: String,
+    mimeType: String,
+    size: Number,
+    url: String,
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    uploadedAt: { type: Date, default: Date.now }
+  }],
   // SLA fields
   sla: {
     type: {
@@ -298,6 +308,7 @@ ticketSchema.methods.startTimeTracking = function(userId, description) {
   };
 
   this.timeEntries.push(newEntry);
+  this.actualTime = this.timeEntries.reduce((total, entry) => total + (entry.duration || 0), 0);
   return this.save();
 };
 

@@ -27,21 +27,46 @@ import {
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useQuery } from 'react-query';
+import { analyticsAPI, ticketsAPI, usersAPI } from '../../services/api';
 
 const Dashboard: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
+  // Live analytics overview (premium/admin)
+  const { data: overviewData } = useQuery(
+    ['analytics-overview'],
+    () => analyticsAPI.getOverview(),
+    { refetchOnWindowFocus: false }
+  );
 
-  // Mock data - in real app this would come from API
+  // Critical tickets count (as "urgent")
+  const { data: criticalData } = useQuery(
+    ['tickets-critical-count'],
+    () => ticketsAPI.getAll({ priority: 'critical', page: 1, limit: 1 }),
+    { refetchOnWindowFocus: false }
+  );
+
+  // Active agents count
+  const { data: agentsData } = useQuery(
+    ['agents-active-count'],
+    () => usersAPI.getAll({ role: 'agent', isActive: true, page: 1, limit: 1 }),
+    { refetchOnWindowFocus: false }
+  );
+
+  const overview = overviewData?.data?.overview || {};
+  const urgentTickets = criticalData?.data?.pagination?.total || 0;
+  const activeAgents = agentsData?.data?.pagination?.total || 0;
+
   const stats = {
-    totalTickets: 156,
-    openTickets: 23,
-    resolvedTickets: 89,
-    urgentTickets: 5,
-    totalUsers: 45,
-    activeAgents: 12,
-    avgResolutionTime: '4.2h',
-    slaCompliance: 94.5,
+    totalTickets: overview.totalTickets || 0,
+    openTickets: overview.openTickets || 0,
+    resolvedTickets: overview.resolvedTickets || 0,
+    urgentTickets,
+    totalUsers: undefined as unknown as number,
+    activeAgents,
+    avgResolutionTime: `${Math.round((overviewData?.data?.resolutionTime?.avgResolutionTime || 0) * 10) / 10}h`,
+    slaCompliance: overview.slaCompliance || 0,
   };
 
   const recentTickets = [
@@ -132,7 +157,7 @@ const Dashboard: React.FC = () => {
                 {stats.totalTickets}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                +12% from last month
+                {/* Placeholder for growth metric */}
               </Typography>
             </CardContent>
           </Card>
@@ -195,7 +220,7 @@ const Dashboard: React.FC = () => {
                 {stats.activeAgents}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                of {stats.totalUsers} total users
+                {/* Could show total users when needed */}
               </Typography>
             </CardContent>
           </Card>
@@ -213,14 +238,14 @@ const Dashboard: React.FC = () => {
               {stats.slaCompliance}%
             </Typography>
             <Chip
-              label="On Track"
-              color="success"
+              label={stats.slaCompliance >= 95 ? 'On Track' : 'Needs Attention'}
+              color={stats.slaCompliance >= 95 ? 'success' : 'warning'}
               size="small"
             />
           </Box>
           <LinearProgress
             variant="determinate"
-            value={stats.slaCompliance}
+            value={Math.min(100, Math.max(0, stats.slaCompliance))}
             sx={{ height: 8, borderRadius: 4 }}
           />
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
